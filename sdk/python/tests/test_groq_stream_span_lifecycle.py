@@ -3,7 +3,7 @@
 exit path.
 
 `TracedSyncStream.__exit__`/`TracedAsyncStream.__aexit__` merely forwarded to
-the wrapped stream and there was no `close()`/`aclose()`, so the span was
+the wrapped stream and neither wrapper overrode `close()`, so the span was
 ended only inside the `except StopIteration`/`StopAsyncIteration` handler.
 A caller that `break`s out of `with … as stream:` before the stream is
 exhausted, or calls `stream.close()` early, never hit that handler, so the
@@ -14,7 +14,9 @@ streaming-span leak fixed for Anthropic in #1461 and filed for OpenAI in
 
 These tests drive the real `chat`/`async_chat` wrapper factories with a
 synthetic Groq-shaped stream and assert the span ends exactly once, carrying
-token-usage attributes, on each exit path.
+token-usage attributes, on each exit path. Both fakes mirror the SDK surface:
+`groq.Stream` and `groq.AsyncStream` each expose `close()` and neither has an
+`aclose()`, so the async early-close override has to be `close()` too.
 """
 
 import time
@@ -101,7 +103,12 @@ class FakeSyncStream:
 
 
 class FakeAsyncStream:
-    """Async context-manager stream shaped like groq's AsyncStream."""
+    """Async stand-in for groq's AsyncStream.
+
+    The real class exposes `__aenter__`, `__aexit__`, `__aiter__`, `__anext__`
+    and a coroutine `close()`. It has no `aclose()`, and its `__aexit__`
+    awaits `close()`.
+    """
 
     def __init__(self):
         self._it = iter(CHUNKS)
@@ -111,7 +118,7 @@ class FakeAsyncStream:
         return self
 
     async def __aexit__(self, *exc):
-        return False
+        await self.close()
 
     def __aiter__(self):
         return self
@@ -122,7 +129,7 @@ class FakeAsyncStream:
         except StopIteration:
             raise StopAsyncIteration from None
 
-    async def aclose(self):
+    async def close(self):
         self.closed = True
 
 
@@ -223,17 +230,23 @@ async def test_async_early_break_inside_with_ends_span():
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_finalizes_span():
+async def test_async_close_finalizes_span():
+    """An early `await stream.close()` has to export the span.
+
+    The stream is closed without a surrounding `async with`, because that is
+    the path where no `__aexit__` can finalize on the wrapper's behalf: if
+    `close()` does not end the span, nothing does.
+    """
     tracer, exporter = _tracer_with_exporter()
     wrapper = _factory(tracer, is_async=True)
 
     stream = await wrapper(_acreate, None, (), REQUEST_KWARGS)
-    async with stream as s:
-        await anext(s)
-        await s.aclose()
+    await anext(stream)
+    await stream.close()
 
     time.sleep(0.05)
     _assert_one_span_with_tokens(exporter)
+    assert stream.__wrapped__.closed, "the wrapped stream must still be closed"
 
 
 @pytest.mark.asyncio

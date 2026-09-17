@@ -112,7 +112,7 @@ def async_chat(
         def _finalize_streaming_span(self):
             """Complete and end the span exactly once.
 
-            Called on stream exhaustion and again from aclose()/manager exit;
+            Called on stream exhaustion and again from close()/manager exit;
             the flag keeps the double call a no-op so early exits that never
             see StopAsyncIteration still export the span instead of leaking it.
             """
@@ -136,10 +136,13 @@ def async_chat(
             except Exception as e:
                 handle_exception(self._span, e)
 
-        async def aclose(self):
-            """Close the wrapped stream and finalize the span if not ended."""
+        async def close(self):
+            """Close the wrapped stream and finalize the span if not ended.
+
+            groq's ``AsyncStream`` exposes ``close()``, not ``aclose()``.
+            """
             try:
-                await self.__wrapped__.aclose()
+                await self.__wrapped__.close()
             finally:
                 self._finalize_streaming_span()
 
