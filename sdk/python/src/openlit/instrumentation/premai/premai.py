@@ -71,6 +71,7 @@ def chat(
             self._tbt = 0
             self._server_address = server_address
             self._server_port = server_port
+            self._streaming_response_processed = False
 
         def __enter__(self):
             return self
@@ -83,28 +84,42 @@ def chat(
             return getattr(self.__wrapped__, name)
 
         def __iter__(self):
+            return self
+
+        def __next__(self):
             try:
                 chunk = self.__wrapped__.__next__()
                 process_chunk(self, chunk)
                 return chunk
+            except StopIteration:
+                self._finalize_streaming_span()
+                raise
 
-            finally:
-                try:
-                    with self._span:
-                        process_streaming_chat_response(
-                            self,
-                            pricing_info=pricing_info,
-                            environment=environment,
-                            application_name=application_name,
-                            metrics=metrics,
-                            capture_message_content=capture_message_content,
-                            disable_metrics=disable_metrics,
-                            version=version,
-                            event_provider=event_provider,
-                        )
+        def _finalize_streaming_span(self):
+            """Complete and end the span exactly once.
 
-                except Exception as e:
-                    handle_exception(self._span, e)
+            Iterating past exhaustion raises StopIteration again, so the flag
+            keeps the repeat call a no-op instead of writing to an ended span.
+            """
+            if self._streaming_response_processed:
+                return
+            self._streaming_response_processed = True
+            try:
+                with self._span:
+                    process_streaming_chat_response(
+                        self,
+                        pricing_info=pricing_info,
+                        environment=environment,
+                        application_name=application_name,
+                        metrics=metrics,
+                        capture_message_content=capture_message_content,
+                        disable_metrics=disable_metrics,
+                        version=version,
+                        event_provider=event_provider,
+                    )
+
+            except Exception as e:
+                handle_exception(self._span, e)
 
     def wrapper(wrapped, instance, args, kwargs):
         """
