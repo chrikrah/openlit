@@ -543,11 +543,16 @@ def process_chunk(scope, chunk):
         delta = chunked.get("delta") or {}
         scope._output_tokens = usage.get("output_tokens", 0) or 0
         scope._finish_reason = delta.get("stop_reason") or scope._finish_reason
-        # message_delta carries final usage; update cache token counts when present
-        scope._cache_creation_input_tokens = (
-            usage.get("cache_creation_input_tokens", 0) or 0
-        )
-        scope._cache_read_input_tokens = usage.get("cache_read_input_tokens", 0) or 0
+        # message_delta carries final usage; update the cache token counts
+        # only when it reports them. Its usage block reports output_tokens
+        # and leaves the cache fields absent or null, so assigning them
+        # unconditionally would zero what message_start read.
+        cache_creation_input_tokens = usage.get("cache_creation_input_tokens")
+        if cache_creation_input_tokens is not None:
+            scope._cache_creation_input_tokens = cache_creation_input_tokens
+        cache_read_input_tokens = usage.get("cache_read_input_tokens")
+        if cache_read_input_tokens is not None:
+            scope._cache_read_input_tokens = cache_read_input_tokens
 
 
 def common_chat_logic(
